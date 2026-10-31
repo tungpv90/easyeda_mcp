@@ -26,11 +26,19 @@ export type CliRunContext = EnvContext & {
   localEntryPath?: string;
 };
 
+export type ChatCommandOptions = {
+  port?: number;
+  model?: string;
+  extraMcp?: boolean;
+};
+
+export type CliResult = { handled: boolean; exitCode: number; chat?: ChatCommandOptions };
+
 export function handleCliArgs(
   argv: string[],
   io: CliIo = defaultIo,
   context: CliRunContext = {}
-): { handled: boolean; exitCode: number } {
+): CliResult {
   if (argv.length === 0) {
     return { handled: false, exitCode: 0 };
   }
@@ -57,6 +65,10 @@ export function handleCliArgs(
 
   if (command === "export-extension") {
     return runExportExtensionCommand(argv.slice(1), io, context);
+  }
+
+  if (command === "chat") {
+    return parseChatCommand(argv.slice(1), io);
   }
 
   io.stderr(`Unknown command or option: "${command}". Run "${MCP_SERVER_NAME} --help" for usage.`);
@@ -217,6 +229,46 @@ function runExportExtensionCommand(
   return { handled: true, exitCode: result.status === "exported" ? 0 : 1 };
 }
 
+function parseChatCommand(args: string[], io: CliIo): CliResult {
+  const options: ChatCommandOptions = {};
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--help" || arg === "-h") {
+      io.stdout(renderChatHelp());
+      return { handled: true, exitCode: 0 };
+    }
+    if (arg === "--port" || arg.startsWith("--port=")) {
+      const rawValue = arg.startsWith("--port=") ? arg.slice("--port=".length) : args[++i];
+      const port = Number(rawValue);
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+        io.stderr(`Invalid value for --port: "${rawValue ?? ""}".`);
+        return { handled: true, exitCode: 1 };
+      }
+      options.port = port;
+      continue;
+    }
+    if (arg === "--model" || arg.startsWith("--model=")) {
+      const rawValue = arg.startsWith("--model=") ? arg.slice("--model=".length) : args[++i];
+      if (!rawValue || !rawValue.trim()) {
+        io.stderr("Missing value for --model.");
+        return { handled: true, exitCode: 1 };
+      }
+      options.model = rawValue.trim();
+      continue;
+    }
+    if (arg === "--no-extra-mcp") {
+      options.extraMcp = false;
+      continue;
+    }
+
+    io.stderr(`Unknown option for chat: "${arg}". Run "${MCP_SERVER_NAME} chat --help" for usage.`);
+    return { handled: true, exitCode: 1 };
+  }
+
+  return { handled: false, exitCode: 0, chat: options };
+}
+
 function renderSetupReport(report: SetupReport): string {
   const lines: string[] = [];
   const dryRunPrefix = report.dryRun ? "[DRY RUN] " : "";
@@ -293,6 +345,7 @@ function renderMainHelp(): string {
     `  npx -y ${PACKAGE_NAME}                   Start the MCP server over stdio (default for AI clients)`,
     `  npx -y ${PACKAGE_NAME} setup [options]   Auto-configure AI clients and export easyeda_mcp_bridge.eext`,
     `  npx -y ${PACKAGE_NAME} export-extension  Copy easyeda_mcp_bridge.eext to a folder (default: current dir)`,
+    `  npx -y ${PACKAGE_NAME} chat [options]    Host the in-EasyEDA chat panel using your local Claude Code login`,
     `  npx -y ${PACKAGE_NAME} --version         Print server and bundled extension versions`,
     `  npx -y ${PACKAGE_NAME} --help            Show this help message`,
     "",
@@ -325,6 +378,28 @@ function renderSetupHelp(): string {
     "  --no-extension          Do not copy easyeda_mcp_bridge.eext",
     "  --dry-run               Preview changes without modifying disk",
     "  --json                  Print JSON report"
+  ].join("\n");
+}
+
+function renderChatHelp(): string {
+  return [
+    `Usage: npx -y ${PACKAGE_NAME} chat [options]`,
+    "",
+    "Hosts the EasyEDA Pro chat panel (MCP Bridge -> Claude Chat). Messages are answered by the",
+    "Claude Code CLI installed on this computer, signed in with your own Claude account.",
+    "Run it instead of an AI client that starts this MCP server: both need the bridge port 8765.",
+    "",
+    "Options:",
+    "  --port <port>     Chat panel port (default: 8766, or EASYEDA_CHAT_PORT)",
+    "  --model <model>   Model alias or name passed to Claude Code (default: your Claude Code default)",
+    "  --no-extra-mcp    Offer only this project's tools, not other EasyEDA MCP servers",
+    "",
+    "Other EasyEDA MCP servers (such as easyeda-copilot for schematic edits, placement and routing)",
+    "are read from ~/.easyeda-pro-mcp/chat/mcp-servers.json, or detected in Claude Code's ~/.claude.json.",
+    "",
+    "Environment:",
+    "  EASYEDA_CHAT_ALLOWED_ORIGINS   Extra comma-separated origins allowed to open the panel",
+    "  EASYEDA_CHAT_CLAUDE_BIN        Path to the claude executable if it is not on PATH"
   ].join("\n");
 }
 

@@ -1,0 +1,965 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Chat</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f6f7f9;
+    --surface-2: #eef0f4;
+    --border: #e1e4ea;
+    --text: #1d2330;
+    --muted: #6b7280;
+    --accent: #c96442;
+    --accent-text: #ffffff;
+    --ok: #1f8a4c;
+    --warn: #b26b00;
+    --danger: #c62828;
+    --danger-bg: #fdecec;
+    --code-bg: #f0f2f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1d21;
+      --surface: #25272c;
+      --surface-2: #2d3036;
+      --border: #3a3d44;
+      --text: #e7e9ee;
+      --muted: #9aa1ad;
+      --accent: #d97757;
+      --accent-text: #ffffff;
+      --ok: #4cc27f;
+      --warn: #e0a440;
+      --danger: #ff6b6b;
+      --danger-bg: #3a2326;
+      --code-bg: #2a2c31;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  header .title { font-weight: 600; flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--danger); }
+  select, button, input {
+    font: inherit;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 8px;
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { background: var(--surface-2); }
+  button:disabled { opacity: .5; cursor: default; }
+  .statusbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  .statusbar span { display: inline-flex; align-items: center; gap: 5px; }
+  #banner {
+    display: none;
+    margin: 10px 12px 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--danger-bg);
+    color: var(--text);
+    font-size: 13px;
+  }
+  #banner.show { display: block; }
+  #banner code { user-select: all; }
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .msg { max-width: 100%; overflow-wrap: anywhere; }
+  .msg.user {
+    align-self: flex-end;
+    max-width: 88%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 12px;
+    white-space: pre-wrap;
+  }
+  .msg.assistant > :first-child { margin-top: 0; }
+  .msg.assistant > :last-child { margin-bottom: 0; }
+  .msg.assistant.streaming::after { content: "▍"; color: var(--accent); }
+  .msg.error {
+    background: var(--danger-bg);
+    border: 1px solid var(--danger);
+    border-radius: 8px;
+    padding: 8px 12px;
+    white-space: pre-wrap;
+  }
+  .msg.note { color: var(--muted); font-size: 12px; text-align: center; }
+  details.tool {
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  details.tool summary {
+    cursor: pointer;
+    padding: 5px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    list-style: none;
+  }
+  details.tool summary::-webkit-details-marker { display: none; }
+  details.tool .state { margin-left: auto; color: var(--muted); }
+  details.tool.ok .state { color: var(--ok); }
+  details.tool.err .state { color: var(--danger); }
+  details.tool pre { margin: 0 10px 8px; max-height: 220px; overflow: auto; }
+  .permission {
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: var(--surface);
+  }
+  .permission pre { max-height: 200px; overflow: auto; }
+  .permission .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+  pre, code { font-family: Consolas, "SFMono-Regular", Menlo, monospace; font-size: 12.5px; }
+  pre { background: var(--code-bg); border-radius: 6px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
+  code { background: var(--code-bg); border-radius: 4px; padding: 0 4px; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
+  th { background: var(--surface); }
+  a { color: var(--accent); }
+  #signin {
+    display: none;
+    margin: 12px 12px 0;
+    padding: 14px;
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    background: var(--surface);
+  }
+  #signin.show { display: block; }
+  #signin h3 { margin: 0 0 4px; font-size: 15px; }
+  #signin p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+  #signin .actions { display: flex; gap: 8px; align-items: center; }
+  #loginLinks a { display: block; margin-top: 8px; word-break: break-all; font-size: 12px; }
+  #loginLog { display: none; margin: 8px 0 0; max-height: 140px; overflow: auto; white-space: pre-wrap; font-size: 11.5px; }
+  .link-button { border: 0; background: none; padding: 0; color: var(--accent); font-size: 12px; text-decoration: underline; }
+  .link-button:hover:not(:disabled) { background: none; }
+  body { position: relative; }
+  #resizeHandle {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: ew-resize;
+    z-index: 20;
+    touch-action: none;
+  }
+  #resizeHandle:hover, #resizeHandle.active { background: var(--accent); opacity: .35; }
+  #resizeLabel {
+    display: none;
+    position: fixed;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 21;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--text);
+    color: var(--bg);
+    font-size: 12px;
+  }
+  #historyPanel {
+    display: none;
+    position: absolute;
+    top: 45px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 5;
+    background: var(--bg);
+    overflow-y: auto;
+    padding: 8px 12px 12px;
+  }
+  #historyPanel.show { display: block; }
+  #historyPanel .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  #historyPanel .head strong { font-size: 13px; }
+  .conv {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .conv:hover { background: var(--surface); }
+  .conv.current { background: var(--surface-2); }
+  .conv .text { flex: 1; min-width: 0; }
+  .conv .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv .when { font-size: 11px; color: var(--muted); }
+  .conv .del { border: 0; background: none; color: var(--muted); padding: 0 4px; font-size: 15px; }
+  .conv .del:hover:not(:disabled) { color: var(--danger); background: none; }
+  #empty { margin: auto; text-align: center; color: var(--muted); max-width: 320px; }
+  #empty .suggestions { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  #empty .suggestions button { text-align: left; }
+  footer { border-top: 1px solid var(--border); padding: 10px 12px; }
+  .composer {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 6px 6px 6px 10px;
+    background: var(--bg);
+  }
+  .composer:focus-within { border-color: var(--accent); }
+  textarea {
+    flex: 1;
+    border: 0;
+    outline: 0;
+    resize: none;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    max-height: 160px;
+    padding: 4px 0;
+  }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div id="resizeHandle" title="Drag to resize"></div>
+<div id="resizeLabel"></div>
+<header>
+  <div class="title"><span class="dot" id="connDot"></span><span>Claude Chat</span></div>
+  <select id="model" title="Model">
+    <option value="">Default model</option>
+    <option value="sonnet">Sonnet</option>
+    <option value="opus">Opus</option>
+    <option value="haiku">Haiku</option>
+  </select>
+  <button id="historyBtn" title="Saved conversations">History</button>
+  <button id="newChat" title="Start a new conversation">New</button>
+</header>
+<div id="historyPanel">
+  <div class="head"><strong>Conversations</strong><button id="historyClose">Close</button></div>
+  <div id="historyList"></div>
+</div>
+<div class="statusbar">
+  <span id="claudeStatus"><span class="dot"></span>Claude: checking…</span>
+  <button id="signOut" class="link-button" style="display:none">Sign out</button>
+  <span id="edaStatus"><span class="dot"></span>EasyEDA: checking…</span>
+  <span id="usage"></span>
+  <span id="servers"></span>
+</div>
+<div id="banner"></div>
+<div id="signin">
+  <h3>Sign in with your Claude account</h3>
+  <p>Uses Claude Code's own sign-in: a browser window opens where you log in to Claude (Pro, Max, Team…). No API key needed.</p>
+  <div class="actions">
+    <button id="signIn" class="primary">Sign in with Claude</button>
+    <button id="cancelSignIn" style="display:none">Cancel</button>
+    <span id="loginState" class="hint"></span>
+  </div>
+  <div id="loginLinks"></div>
+  <pre id="loginLog"></pre>
+</div>
+<div id="messages">
+  <div id="empty">
+    <div>Ask about the schematic or PCB that is open in EasyEDA Pro.</div>
+    <div class="suggestions">
+      <button data-prompt="Summarize the open project: document type, component count and key nets.">Summarize the open project</button>
+      <button data-prompt="Find unconnected pins in the schematic and explain which ones matter.">Find unconnected pins</button>
+      <button data-prompt="Run DRC on the PCB and explain the errors, most important first.">Run DRC and explain the errors</button>
+    </div>
+  </div>
+</div>
+<footer>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Message Claude…"></textarea>
+    <button id="send" class="primary">Send</button>
+  </div>
+  <div class="hint">Enter to send · Shift+Enter for a new line · uses the Claude Code login on this computer</div>
+</footer>
+<script>
+(function () {
+  "use strict";
+
+  var DEFAULT_PORT = 8766;
+  var HOST_COMMAND = "npx -y @vlabsoftware/easyeda-pro-mcp chat";
+  var TOOL_PREFIX = /^mcp__([A-Za-z0-9_-]+)__/;
+
+  var el = function (id) { return document.getElementById(id); };
+  var messagesEl = el("messages");
+  var emptyEl = el("empty");
+  var inputEl = el("input");
+  var sendBtn = el("send");
+  var modelEl = el("model");
+  var bannerEl = el("banner");
+
+  var ws = null;
+  var reconnectDelay = 500;
+  var status = null;
+  var streamingEl = null;
+  var streamingText = "";
+  var tools = {};
+  var permissions = {};
+
+  function storageGet(key) {
+    try { return window.localStorage.getItem(key); } catch (e) { return null; }
+  }
+
+  function chatSocketUrl() {
+    // Served by the chat host itself (http://127.0.0.1:8766/): talk back to the same host.
+    if (/^https?:$/.test(location.protocol) && /^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
+      return "ws://" + location.host + "/chat";
+    }
+    var port = Number(storageGet("easyedaChatPort")) || DEFAULT_PORT;
+    return "ws://127.0.0.1:" + port + "/chat";
+  }
+
+  function connect() {
+    var url = chatSocketUrl();
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      showBanner(e && e.message ? e.message : String(e));
+      scheduleReconnect();
+      return;
+    }
+    ws.onopen = function () {
+      reconnectDelay = 500;
+      hideBanner();
+      el("connDot").className = "dot ok";
+    };
+    ws.onmessage = function (event) {
+      var message;
+      try { message = JSON.parse(event.data); } catch (e) { return; }
+      handle(message);
+    };
+    ws.onclose = function () {
+      el("connDot").className = "dot bad";
+      showBanner();
+      setBusy(false);
+      scheduleReconnect();
+    };
+  }
+
+  function scheduleReconnect() {
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 5000);
+  }
+
+  function showBanner(detail) {
+    bannerEl.className = "show";
+    bannerEl.innerHTML = "<strong>Cannot reach the chat host.</strong> Start it in a terminal on this computer:<br><code>" +
+      escapeHtml(HOST_COMMAND) + "</code>" + (detail ? "<br><small>" + escapeHtml(detail) + "</small>" : "") +
+      "<br><small>Already running? Look for a \"Rejected Origin\" line in its terminal. Retrying " +
+      escapeHtml(chatSocketUrl()) + " automatically.</small>";
+  }
+
+  function hideBanner() {
+    bannerEl.className = "";
+    bannerEl.textContent = "";
+  }
+
+  function send(message) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
+      return true;
+    }
+    return false;
+  }
+
+  function handle(message) {
+    switch (message.type) {
+      case "history":
+        clearMessages();
+        (message.events || []).forEach(handle);
+        break;
+      case "reset":
+        clearMessages();
+        break;
+      case "status":
+        renderStatus(message.status);
+        break;
+      case "user_message":
+        finishStreaming();
+        addMessage("user", message.text);
+        break;
+      case "text_delta":
+        appendDelta(message.text);
+        break;
+      case "assistant_text":
+        finalizeAssistant(message.text);
+        break;
+      case "tool_use":
+        finishStreaming();
+        addTool(message);
+        break;
+      case "tool_result":
+        resolveTool(message);
+        break;
+      case "permission_request":
+        addPermission(message.request);
+        break;
+      case "permission_resolved":
+        resolvePermission(message.id);
+        break;
+      case "usage":
+        renderUsage(message);
+        break;
+      case "turn_end":
+        finishStreaming();
+        if (message.subtype === "interrupted") {
+          addNote(message.text || "Stopped.");
+        } else if (message.isError) {
+          addError(message.text || ("Claude Code ended the turn with " + (message.subtype || "an error") + "."));
+        }
+        break;
+      case "error":
+        finishStreaming();
+        addError(message.message);
+        break;
+      case "history_list":
+        historyItems = message.items || [];
+        renderHistory();
+        break;
+      case "login_output":
+        showLoginOutput(message);
+        break;
+      case "login_finished":
+        el("loginState").textContent = message.message;
+        if (!message.ok) { addError(message.message); }
+        break;
+    }
+  }
+
+  var historyItems = [];
+
+  function toggleHistory(show) {
+    el("historyPanel").className = show ? "show" : "";
+    if (show) {
+      send({ type: "list_history" });
+      renderHistory();
+    }
+  }
+
+  function renderHistory() {
+    var list = el("historyList");
+    list.textContent = "";
+    if (historyItems.length === 0) {
+      list.innerHTML = "<div class=\"hint\">No saved conversations yet.</div>";
+      return;
+    }
+    var currentId = status && status.sessionId;
+    historyItems.forEach(function (item) {
+      var row = document.createElement("div");
+      row.className = "conv" + (item.id === currentId ? " current" : "");
+      row.innerHTML = "<div class=\"text\"><div class=\"title\"></div><div class=\"when\"></div></div><button class=\"del\" title=\"Delete\">×</button>";
+      row.querySelector(".title").textContent = item.title;
+      row.querySelector(".when").textContent = formatWhen(item.updatedAt);
+      row.onclick = function () {
+        if (item.id !== currentId) { send({ type: "open_history", id: item.id }); }
+        toggleHistory(false);
+      };
+      var del = row.querySelector(".del");
+      if (item.id === currentId) {
+        del.style.visibility = "hidden";
+      }
+      del.onclick = function (event) {
+        event.stopPropagation();
+        if (del.getAttribute("data-armed")) {
+          send({ type: "delete_history", id: item.id });
+          return;
+        }
+        // Two clicks to delete: sandboxed iframes may block window.confirm.
+        del.setAttribute("data-armed", "1");
+        del.textContent = "Delete?";
+        setTimeout(function () { del.removeAttribute("data-armed"); del.textContent = "×"; }, 3000);
+      };
+      list.appendChild(row);
+    });
+  }
+
+  function formatWhen(iso) {
+    var date = new Date(iso);
+    if (isNaN(date.getTime())) { return ""; }
+    var today = new Date();
+    if (date.toDateString() === today.toDateString()) {
+      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    return date.toLocaleDateString([], { day: "2-digit", month: "2-digit", year: "numeric" }) + " " +
+      date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function showLoginOutput(message) {
+    var log = el("loginLog");
+    log.style.display = "block";
+    log.textContent += message.text;
+    log.scrollTop = log.scrollHeight;
+    (message.urls || []).forEach(function (url) {
+      var links = el("loginLinks");
+      if (links.querySelector("a[href=\"" + CSS.escape(url) + "\"]")) { return; }
+      var link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Browser did not open? Open the sign-in page";
+      link.title = url;
+      links.appendChild(link);
+    });
+  }
+
+  function renderAccount(claude, loginInProgress) {
+    var needsSignIn = Boolean(claude.installed && !claude.loggedIn);
+    el("signin").className = needsSignIn || loginInProgress ? "show" : "";
+    el("signOut").style.display = claude.loggedIn && !loginInProgress ? "" : "none";
+    el("signIn").disabled = loginInProgress;
+    el("signIn").textContent = loginInProgress ? "Waiting for browser sign-in…" : "Sign in with Claude";
+    el("cancelSignIn").style.display = loginInProgress ? "" : "none";
+    if (loginInProgress && !wasLoggingIn) {
+      el("loginLog").textContent = "";
+      el("loginLog").style.display = "none";
+      el("loginLinks").textContent = "";
+      el("loginState").textContent = "";
+    }
+    wasLoggingIn = loginInProgress;
+    inputEl.disabled = !claude.loggedIn;
+    inputEl.placeholder = claude.loggedIn ? "Ask about the schematic or PCB…" : "Sign in with Claude to start chatting";
+  }
+  var wasLoggingIn = false;
+
+  function clearMessages() {
+    streamingEl = null;
+    streamingText = "";
+    tools = {};
+    permissions = {};
+    Array.prototype.slice.call(messagesEl.children).forEach(function (child) {
+      if (child !== emptyEl) { messagesEl.removeChild(child); }
+    });
+    emptyEl.style.display = "";
+  }
+
+  function append(node) {
+    emptyEl.style.display = "none";
+    var nearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+    messagesEl.appendChild(node);
+    if (nearBottom) { messagesEl.scrollTop = messagesEl.scrollHeight; }
+    return node;
+  }
+
+  function addMessage(kind, text) {
+    var node = document.createElement("div");
+    node.className = "msg " + kind;
+    if (kind === "assistant") {
+      node.innerHTML = renderMarkdown(text);
+    } else {
+      node.textContent = text;
+    }
+    return append(node);
+  }
+
+  function addError(text) { return addMessage("error", text); }
+  function addNote(text) { return addMessage("note", text); }
+
+  function appendDelta(text) {
+    if (!streamingEl) {
+      streamingText = "";
+      streamingEl = addMessage("assistant", "");
+      streamingEl.classList.add("streaming");
+    }
+    streamingText += text;
+    streamingEl.innerHTML = renderMarkdown(streamingText);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function finalizeAssistant(text) {
+    if (streamingEl) {
+      streamingEl.innerHTML = renderMarkdown(text);
+      streamingEl.classList.remove("streaming");
+      streamingEl = null;
+      streamingText = "";
+      return;
+    }
+    addMessage("assistant", text);
+  }
+
+  function finishStreaming() {
+    if (streamingEl) {
+      streamingEl.classList.remove("streaming");
+      streamingEl = null;
+      streamingText = "";
+    }
+  }
+
+  function prettyToolName(name) {
+    return String(name || "tool").replace(TOOL_PREFIX, "").replace(/^easyeda_/, "").replace(/_/g, " ");
+  }
+
+  function addTool(message) {
+    var node = document.createElement("details");
+    node.className = "tool";
+    node.innerHTML = "<summary>🔧 <span></span><span class=\"state\">running…</span></summary><pre class=\"input\"></pre>";
+    node.querySelector("summary span").textContent = prettyToolName(message.name);
+    node.querySelector("pre.input").textContent = formatJson(message.input);
+    tools[message.id] = node;
+    append(node);
+  }
+
+  function resolveTool(message) {
+    var node = tools[message.toolUseId];
+    if (!node) { return; }
+    node.classList.add(message.isError ? "err" : "ok");
+    node.querySelector(".state").textContent = message.isError ? "failed" : "done";
+    if (message.text) {
+      var pre = document.createElement("pre");
+      pre.textContent = message.text;
+      node.appendChild(pre);
+    }
+  }
+
+  function addPermission(request) {
+    if (permissions[request.id]) { return; }
+    var node = document.createElement("div");
+    node.className = "permission";
+    node.innerHTML = "<div><strong>Claude wants to run <span class=\"name\"></span></strong></div>" +
+      "<div class=\"hint\">This can change your project. Check the parameters before allowing it.</div>" +
+      "<pre></pre><div class=\"actions\"><button class=\"primary allow\">Allow</button>" +
+      "<button class=\"always\" title=\"Run this tool without asking for the rest of this conversation\">Allow for this chat</button>" +
+      "<button class=\"deny\">Deny</button></div>";
+    node.querySelector(".name").textContent = prettyToolName(request.toolName);
+    node.querySelector("pre").textContent = formatJson(request.input);
+    node.querySelector(".allow").onclick = function () { answerPermission(request.id, true, false); };
+    node.querySelector(".always").onclick = function () { answerPermission(request.id, true, true); };
+    node.querySelector(".deny").onclick = function () { answerPermission(request.id, false, false); };
+    permissions[request.id] = node;
+    append(node);
+  }
+
+  function answerPermission(id, allow, remember) {
+    var node = permissions[id];
+    if (!node) { return; }
+    node.querySelectorAll("button").forEach(function (button) { button.disabled = true; });
+    var label = !allow ? "Denied" : remember ? "Allowed for this chat" : "Allowed";
+    node.querySelector(".actions").insertAdjacentHTML("beforeend", "<span class=\"hint\">" + label + "</span>");
+    send({ type: "permission_response", id: id, allow: allow, remember: remember });
+  }
+
+  function resolvePermission(id) {
+    var node = permissions[id];
+    if (node) {
+      node.querySelectorAll("button").forEach(function (button) { button.disabled = true; });
+    }
+  }
+
+  function renderStatus(next) {
+    status = next;
+    var claude = next.claude || {};
+    var claudeEl = el("claudeStatus");
+    if (!claude.installed) {
+      claudeEl.innerHTML = "<span class=\"dot bad\"></span>Claude Code not installed";
+      claudeEl.title = claude.error || "";
+    } else if (!claude.loggedIn) {
+      claudeEl.innerHTML = "<span class=\"dot bad\"></span>Claude: not signed in";
+      claudeEl.title = "";
+    } else {
+      var plan = claude.subscriptionType ? "Claude " + capitalize(claude.subscriptionType) : "Claude (" + (claude.authMethod || "signed in") + ")";
+      claudeEl.innerHTML = "<span class=\"dot ok\"></span>" + escapeHtml(plan);
+      claudeEl.title = claude.email || "";
+    }
+
+    var eda = next.easyeda || {};
+    var edaEl = el("edaStatus");
+    if (!eda.connected) {
+      edaEl.innerHTML = "<span class=\"dot warn\"></span>EasyEDA: not connected (MCP Bridge → Connect)";
+    } else {
+      var doc = eda.documentName || eda.projectName || "no document";
+      var type = eda.documentType && eda.documentType !== "unknown" ? eda.documentType.toUpperCase() + ": " : "";
+      edaEl.innerHTML = "<span class=\"dot ok\"></span>" + escapeHtml(type + doc);
+    }
+
+    renderAccount(claude, Boolean(next.loginInProgress));
+    var servers = next.mcpServers || [];
+    el("servers").textContent = servers.length ? "Tools: " + servers.join(", ") : "";
+    if (document.activeElement !== modelEl) { modelEl.value = next.model || ""; }
+    setBusy(Boolean(next.busy));
+  }
+
+  function renderUsage(usage) {
+    var parts = [];
+    if (usage.fiveHour && typeof usage.fiveHour.utilization === "number") {
+      parts.push("5h " + Math.round(usage.fiveHour.utilization * 100) + "%");
+    }
+    if (usage.sevenDay && typeof usage.sevenDay.utilization === "number") {
+      parts.push("7d " + Math.round(usage.sevenDay.utilization * 100) + "%");
+    }
+    el("usage").textContent = parts.length ? "Usage: " + parts.join(" · ") : "";
+  }
+
+  var busy = false;
+  function setBusy(value) {
+    busy = value;
+    sendBtn.textContent = busy ? "Stop" : "Send";
+    sendBtn.className = busy ? "" : "primary";
+  }
+
+  function submit(text) {
+    text = (text || "").trim();
+    if (!text) { return; }
+    if (!send({ type: "send", text: text })) {
+      addError("Not connected to the chat host.");
+      return;
+    }
+    inputEl.value = "";
+    autoresize();
+  }
+
+  sendBtn.onclick = function () {
+    if (busy) { send({ type: "stop" }); return; }
+    submit(inputEl.value);
+  };
+  inputEl.addEventListener("keydown", function (event) {
+    // isComposing guards Vietnamese/CJK IME input, where Enter confirms a candidate.
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault();
+      if (!busy) { submit(inputEl.value); }
+    }
+  });
+  inputEl.addEventListener("input", autoresize);
+  function autoresize() {
+    inputEl.style.height = "auto";
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
+  }
+  el("newChat").onclick = function () { toggleHistory(false); send({ type: "new" }); };
+  el("historyBtn").onclick = function () { toggleHistory(el("historyPanel").className !== "show"); };
+  el("historyClose").onclick = function () { toggleHistory(false); };
+  el("signIn").onclick = function () { send({ type: "login" }); };
+  el("cancelSignIn").onclick = function () { send({ type: "cancel_login" }); };
+  // Two-click confirmation: sandboxed iframes may block window.confirm.
+  var signOutArmed = null;
+  el("signOut").onclick = function () {
+    var button = el("signOut");
+    if (signOutArmed) {
+      clearTimeout(signOutArmed);
+      signOutArmed = null;
+      button.textContent = "Sign out";
+      send({ type: "logout" });
+      return;
+    }
+    button.textContent = "Click again to sign Claude Code out on this computer";
+    signOutArmed = setTimeout(function () {
+      signOutArmed = null;
+      button.textContent = "Sign out";
+    }, 4000);
+  };
+  modelEl.onchange = function () { send({ type: "set_model", model: modelEl.value }); };
+  emptyEl.querySelectorAll("button[data-prompt]").forEach(function (button) {
+    button.onclick = function () { submit(button.getAttribute("data-prompt")); };
+  });
+
+  // Width drag on the left edge. EasyEDA's SYS_IFrame cannot resize a window, so when the
+  // parent page is reachable (same origin) the dialog elements are resized directly; otherwise
+  // the new width is sent to the extension, which reopens the window at that width.
+  var MIN_WIDTH = 320;
+  var resize = null;
+  var resizeHandle = el("resizeHandle");
+  var resizeLabel = el("resizeLabel");
+  if (window.self === window.top) {
+    // Opened as a normal browser tab: the browser window already resizes.
+    resizeHandle.style.display = "none";
+  }
+
+  function dialogChain() {
+    try {
+      var frame = window.frameElement;
+      if (!frame || !frame.ownerDocument) { return null; }
+      var view = frame.ownerDocument.defaultView;
+      var frameWidth = frame.getBoundingClientRect().width;
+      var chain = [frame];
+      var node = frame.parentElement;
+      // Climb while the ancestor is about as wide as the iframe: those boxes make up the dialog.
+      for (var i = 0; node && i < 8 && node !== frame.ownerDocument.body; i++, node = node.parentElement) {
+        if (node.getBoundingClientRect().width > frameWidth + 60) { break; }
+        chain.push(node);
+      }
+      return chain.map(function (item) {
+        var style = view.getComputedStyle(item);
+        return {
+          node: item,
+          width: parseFloat(style.width),
+          left: parseFloat(style.left),
+          positioned: style.position === "absolute" || style.position === "fixed"
+        };
+      }).concat([{ view: view }]);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function applyDialogWidth(chain, delta) {
+    var outer = chain[chain.length - 2];
+    chain.forEach(function (item) {
+      if (!item.node) { return; }
+      item.node.style.width = (item.width + delta) + "px";
+      item.node.style.maxWidth = "none";
+      item.node.style.minWidth = "0";
+    });
+    // Keep the right edge in place: the left edge follows the pointer.
+    if (outer.positioned && !isNaN(outer.left)) {
+      outer.node.style.left = (outer.left - delta) + "px";
+    }
+  }
+
+  resizeHandle.addEventListener("pointerdown", function (event) {
+    event.preventDefault();
+    resizeHandle.setPointerCapture(event.pointerId);
+    var chain = dialogChain();
+    var maxWidth = chain ? chain[chain.length - 1].view.innerWidth - 40 : (window.screen.availWidth || 1600) - 80;
+    resize = { startX: event.screenX, startWidth: window.innerWidth, width: window.innerWidth, chain: chain, maxWidth: maxWidth };
+    resizeHandle.classList.add("active");
+    document.body.style.userSelect = "none";
+  });
+
+  resizeHandle.addEventListener("pointermove", function (event) {
+    if (!resize) { return; }
+    var width = Math.round(Math.max(MIN_WIDTH, Math.min(resize.maxWidth, resize.startWidth + (resize.startX - event.screenX))));
+    resize.width = width;
+    if (resize.chain) { applyDialogWidth(resize.chain, width - resize.startWidth); }
+    resizeLabel.style.display = "block";
+    resizeLabel.textContent = width + " px" + (resize.chain ? "" : " · release to apply");
+  });
+
+  function endResize(event) {
+    if (!resize) { return; }
+    var done = resize;
+    resize = null;
+    try { resizeHandle.releasePointerCapture(event.pointerId); } catch (e) { /* already released */ }
+    resizeHandle.classList.remove("active");
+    document.body.style.userSelect = "";
+    resizeLabel.style.display = "none";
+    if (Math.abs(done.width - done.startWidth) >= 4) {
+      send({ type: "panel_width", width: done.width, reopen: !done.chain });
+    }
+  }
+  resizeHandle.addEventListener("pointerup", endResize);
+  resizeHandle.addEventListener("pointercancel", endResize);
+
+  function capitalize(text) { return text.charAt(0).toUpperCase() + text.slice(1); }
+
+  function formatJson(value) {
+    try { return JSON.stringify(value, null, 2); } catch (e) { return String(value); }
+  }
+
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  // Small Markdown subset: fenced code, headings, lists, tables, bold/italic, inline code, links.
+  function renderMarkdown(source) {
+    var lines = String(source || "").replace(/\r\n/g, "\n").split("\n");
+    var html = [];
+    var i = 0;
+    while (i < lines.length) {
+      var line = lines[i];
+      var fence = line.match(/^\s*```/);
+      if (fence) {
+        var code = [];
+        i++;
+        while (i < lines.length && !/^\s*```/.test(lines[i])) { code.push(lines[i]); i++; }
+        i++;
+        html.push("<pre><code>" + escapeHtml(code.join("\n")) + "</code></pre>");
+        continue;
+      }
+      if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1])) {
+        var header = splitRow(line);
+        i += 2;
+        var rows = [];
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(splitRow(lines[i])); i++; }
+        html.push("<table><thead><tr>" + header.map(function (cell) { return "<th>" + inline(cell) + "</th>"; }).join("") +
+          "</tr></thead><tbody>" + rows.map(function (row) {
+            return "<tr>" + row.map(function (cell) { return "<td>" + inline(cell) + "</td>"; }).join("") + "</tr>";
+          }).join("") + "</tbody></table>");
+        continue;
+      }
+      var heading = line.match(/^(#{1,4})\s+(.*)$/);
+      if (heading) {
+        var level = Math.min(heading[1].length + 2, 6);
+        html.push("<h" + level + ">" + inline(heading[2]) + "</h" + level + ">");
+        i++;
+        continue;
+      }
+      if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
+        var ordered = /^\s*\d+\./.test(line);
+        var items = [];
+        while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) {
+          items.push("<li>" + inline(lines[i].replace(/^\s*([-*]|\d+\.)\s+/, "")) + "</li>");
+          i++;
+        }
+        html.push((ordered ? "<ol>" : "<ul>") + items.join("") + (ordered ? "</ol>" : "</ul>"));
+        continue;
+      }
+      if (!line.trim()) { i++; continue; }
+      var para = [];
+      while (i < lines.length && lines[i].trim() && !/^\s*(```|#{1,4}\s|([-*]|\d+\.)\s+|\|)/.test(lines[i])) {
+        para.push(inline(lines[i]));
+        i++;
+      }
+      if (para.length === 0) { para.push(inline(lines[i])); i++; }
+      html.push("<p>" + para.join("<br>") + "</p>");
+    }
+    return html.join("");
+  }
+
+  function splitRow(line) {
+    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(function (cell) { return cell.trim(); });
+  }
+
+  function inline(text) {
+    var codes = [];
+    var out = escapeHtml(text).replace(/`([^`]+)`/g, function (_, code) {
+      codes.push("<code>" + code + "</code>");
+      return "\u0000" + (codes.length - 1) + "\u0000";
+    });
+    out = out
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>");
+    return out.replace(/\u0000(\d+)\u0000/g, function (_, index) { return codes[Number(index)]; });
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>

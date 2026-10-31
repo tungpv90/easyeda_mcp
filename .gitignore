@@ -11,3 +11,6 @@ docs/.vitepress/cache/
 .agents/
 PROJECT_MEMORY.md
 prompt-home-3d.md
+
+# Upstream EasyEDA Copilot checkout used as a reference; the used parts live in extension/vendor/
+/easyeda-copilot/

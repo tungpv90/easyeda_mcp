@@ -28,6 +28,7 @@
   "files": [
     "dist",
     "build/dist/easyeda_mcp_bridge.eext",
+    "extension/iframe/chat.html",
     "README.md",
     "LICENSE"
   ],
@@ -36,7 +37,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "build:extension": "esbuild extension/src/index.ts --bundle --platform=browser --format=iife --global-name=edaEsbuildExportName --outfile=extension/dist/index.js",
+    "build:extension": "node scripts/build-extension.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
@@ -64,6 +65,7 @@
     "fs-extra": "^11.3.5",
     "ignore": "^7.0.5",
     "jszip": "^3.10.1",
+    "p-queue": "9.1.0",
     "typescript": "^5.8.3",
     "vitepress": "^1.6.4",
     "vitest": "^3.1.4"

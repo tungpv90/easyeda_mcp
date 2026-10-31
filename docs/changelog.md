@@ -4,6 +4,17 @@ All notable changes to the EasyEDA Pro MCP server and browser extension are docu
 
 For packaged `.eext` and `.mcpb` downloads and checksums, see [GitHub Releases](https://github.com/VLab-Software/easyeda_mcp/releases).
 
+## Unreleased
+
+**Chat Inside EasyEDA Pro with Your Claude Code Login**
+
+- **Chat host (`npx -y @vlabsoftware/easyeda-pro-mcp chat`)**: runs the bridge, a token-protected local MCP endpoint over HTTP, and the chat panel backend; each conversation is answered by the locally signed-in Claude Code CLI (`claude -p` stream-json), so Claude Pro/Max users need no API key.
+- **`MCP Bridge -> Claude Chat` panel**: "Sign in with Claude" (Claude Code's own browser login) and sign-out, streaming answers, tool activity, Claude plan and usage-window status, model picker, and approval cards for project-changing actions. Read-only tools run automatically. Opens as a non-modal window on the right edge; bridge connection notices are now toasts instead of blocking dialogs.
+- **Other EasyEDA MCP servers in the panel**: servers such as `easyeda-copilot` (schematic edits, PCB placement and routing) are picked up from `mcp-servers.json` or Claude Code's config; their read-only tools run without asking and approvals can be granted for the whole chat.
+- **EasyEDA Copilot tools without the Copilot extension**: the extension bundles the MIT-licensed EasyEDA-side client of EasyEDA Copilot 1.3.2 (`extension/vendor/easyeda-copilot`), so `easyeda-copilot-mcp` schematic editing, placement and routing work through EasyEDA MCP Bridge alone; new menu item **Copilot Tools: Pause/Resume**.
+- **Chat history**: conversations are saved locally, the latest one reopens after a restart, and History reopens older ones together with their Claude Code session context.
+- **Hardening**: loopback-only listener with Host and Origin checks, Claude Code built-in tools and personal settings disabled for chat sessions, and `ANTHROPIC_API_KEY` removed from the spawned environment. See the [chat guide](./claude-chat.md).
+
 ## `1.3.0` (Extension `0.4.0`)
 
 **PCB DRC Execution, CPL Export, Layer Stackup, Routing Status, PCB Components, Net Highlighting, Canvas Selection, and Library Search**

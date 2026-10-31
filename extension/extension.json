@@ -25,9 +25,19 @@
         "title": "MCP Bridge",
         "menuItems": [
           {
+            "id": "open-chat",
+            "title": "Claude Chat",
+            "registerFn": "openChat"
+          },
+          {
             "id": "connect",
             "title": "Connect",
             "registerFn": "connect"
+          },
+          {
+            "id": "toggle-copilot-tools",
+            "title": "Copilot Tools: Pause/Resume",
+            "registerFn": "toggleCopilotTools"
           },
           {
             "id": "reconnect",
@@ -53,9 +63,19 @@
         "title": "MCP Bridge",
         "menuItems": [
           {
+            "id": "open-chat",
+            "title": "Claude Chat",
+            "registerFn": "openChat"
+          },
+          {
             "id": "connect",
             "title": "Connect",
             "registerFn": "connect"
+          },
+          {
+            "id": "toggle-copilot-tools",
+            "title": "Copilot Tools: Pause/Resume",
+            "registerFn": "toggleCopilotTools"
           },
           {
             "id": "reconnect",
@@ -81,9 +101,19 @@
         "title": "MCP Bridge",
         "menuItems": [
           {
+            "id": "open-chat",
+            "title": "Claude Chat",
+            "registerFn": "openChat"
+          },
+          {
             "id": "connect",
             "title": "Connect",
             "registerFn": "connect"
+          },
+          {
+            "id": "toggle-copilot-tools",
+            "title": "Copilot Tools: Pause/Resume",
+            "registerFn": "toggleCopilotTools"
           },
           {
             "id": "reconnect",

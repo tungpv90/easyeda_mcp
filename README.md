@@ -178,6 +178,16 @@ Click **[Install in VS Code](https://vscode.dev/redirect?url=vscode%3Amcp%2Finst
 
 </details>
 
+### 4. Or Chat Inside EasyEDA Pro (Claude Code Login)
+
+If the Claude Code CLI is installed and signed in on your computer (for example with a Claude Pro or Max plan), you can chat in a panel inside EasyEDA Pro instead of a separate AI client:
+
+```bash
+npx -y @vlabsoftware/easyeda-pro-mcp chat
+```
+
+Then choose **MCP Bridge → Connect** and **MCP Bridge → Claude Chat** in EasyEDA Pro. Read-only tools run automatically; project-changing actions wait for **Allow** in the panel. See the [chat guide](https://vlabsoft.org/easyeda_mcp/claude-chat) for security, billing and troubleshooting notes.
+
 ---
 
 ## Your First Prompts

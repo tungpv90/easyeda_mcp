@@ -40,6 +40,14 @@ In EasyEDA Pro:
 4. use `MCP Bridge -> Reconnect` if it does not connect automatically
 5. use `MCP Bridge -> Run Diagnostics` if you need extension-side status
 
+## EasyEDA Copilot Tools
+
+The extension bundles the EasyEDA-side client of [EasyEDA Copilot](https://github.com/biosshot/easyeda-copilot) 1.3.2 (MIT, see `THIRD_PARTY_NOTICES.md` and `vendor/easyeda-copilot/`). With it, the `easyeda-copilot-mcp` server's schematic editing, PCB placement and routing tools work without installing the EasyEDA Copilot extension. The client connects to `ws://127.0.0.1:8787` whenever that server runs. Use `MCP Bridge -> Copilot Tools: Pause/Resume` to turn it off and on. If the EasyEDA Copilot extension is also installed, disable it.
+
+## Claude Chat Panel
+
+`MCP Bridge -> Claude Chat` opens `iframe/chat.html`, a chat panel that talks to the local chat host started with `npx -y @vlabsoftware/easyeda-pro-mcp chat` (default `ws://127.0.0.1:8766/chat`). Answers come from the Claude Code CLI signed in on the same computer. See the [chat guide](https://vlabsoft.org/easyeda_mcp/claude-chat).
+
 ## Verify
 
 From your MCP client, run:

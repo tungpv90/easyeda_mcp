@@ -18,6 +18,7 @@ import {
 } from "../../src/protocol/messages.js";
 import { getBridgeConfig, getBridgeUri } from "./bridgeConfig.js";
 import { DrcRules } from "./drcRules.js";
+import { startCopilotClient, toggleCopilotClient } from "./copilotClient.js";
 import { EXTENSION_VERSION } from "../../src/version.js";
 
 type EasyEdaApi = Record<string, any>;
@@ -47,6 +48,11 @@ type BridgeErrorMessage = {
 };
 
 const WS_ID = "easyeda-mcp-bridge";
+const CHAT_IFRAME_ID = "easyeda-mcp-chat";
+const CHAT_IFRAME_PATH = "/iframe/chat.html";
+const CHAT_WIDTH_KEY = "easyeda-mcp-chat-width";
+const DEFAULT_CHAT_WIDTH = 420;
+const MIN_CHAT_WIDTH = 320;
 
 const bridgeConfig = getBridgeConfig();
 const drcRules = new DrcRules(() => eda);
@@ -112,16 +118,34 @@ const handlers: Record<string, (params: Record<string, any>) => Promise<unknown>
   highlightNet,
   getSelection,
   searchLibrary,
-  confirmedAction
+  confirmedAction,
+  setChatPanelWidth
 };
+
+let chatPanelWidth = readStoredChatWidth();
 
 export function activate(status?: "onStartupFinished", arg?: string): void {
   log("warn", `EasyEDA MCP Bridge activated: ${status ?? "manual"} ${arg ?? ""}`);
   void ensureBridgeConnected({ reason: "activation", manual: false });
+  startCopilotTools();
+}
+
+function startCopilotTools(): void {
+  startCopilotClient((error) => log("warn", "EasyEDA Copilot tools client failed to start", error));
+}
+
+// Like upstream Copilot, start at load time too: EasyEDA may not call activate() when
+// activationEvents is empty. Repeated starts are ignored by the client.
+startCopilotTools();
+
+/** Pauses or resumes the built-in client for easyeda-copilot-mcp (schematic edit, placement, routing). */
+export function toggleCopilotTools(): void {
+  toggleCopilotClient((error) => showMessage("Copilot tools", normalizeError(error).message));
 }
 
 export function connect(): void {
   void ensureBridgeConnected({ reason: "manual-connect", manual: true, resetAttempts: true });
+  startCopilotTools();
 }
 
 export function reconnect(): void {
@@ -140,6 +164,71 @@ export async function showStatus(): Promise<void> {
 export async function runDiagnostics(): Promise<void> {
   const diagnostics = await collectDiagnostics();
   showMessage("EasyEDA MCP Bridge Diagnostics", formatDiagnostics(diagnostics));
+}
+
+export async function openChat(): Promise<void> {
+  try {
+    ensureApi("sys_IFrame", "openIFrame");
+    void ensureBridgeConnected({ reason: "open-chat", manual: false });
+    startCopilotTools();
+    if (await optionalCall(() => eda.sys_IFrame.isIFrameAlreadyExist?.(CHAT_IFRAME_ID))) {
+      await eda.sys_IFrame.showIFrame(CHAT_IFRAME_ID);
+      return;
+    }
+    // No public API docks extension content into the right panel, so place a non-modal
+    // window along the right edge, roughly where the built-in Copilot panel sits.
+    const viewport = await optionalCall(() => eda.sys_Window?.getViewportSize?.()) as { width?: number; height?: number } | undefined;
+    const viewportWidth = numeric(viewport?.width) ?? 1280;
+    const viewportHeight = numeric(viewport?.height) ?? 800;
+    const width = clampChatWidth(chatPanelWidth, viewportWidth);
+    const height = Math.max(420, Math.min(viewportHeight - 140, 1000));
+    await eda.sys_IFrame.openIFrame(CHAT_IFRAME_PATH, width, height, CHAT_IFRAME_ID, {
+      title: "Claude Chat",
+      maximizeButton: true,
+      minimizeButton: true,
+      minimizeStyle: "collapsed",
+      grayscaleMask: false,
+      x: Math.max(0, viewportWidth - width - 24),
+      y: 64
+    });
+  } catch (error) {
+    showMessage("Claude Chat", normalizeError(error).message);
+  }
+}
+
+/**
+ * Called by the chat host when the panel's resize handle is released. The panel resizes
+ * its dialog itself when it can reach the parent page; otherwise `reopen` asks us to
+ * reopen the window at the new width, since SYS_IFrame has no resize method.
+ */
+async function setChatPanelWidth(params: Record<string, any>): Promise<Record<string, unknown>> {
+  const width = numeric(params.width);
+  if (width === undefined) {
+    throw apiError("invalid_width", "setChatPanelWidth requires a numeric width.");
+  }
+  chatPanelWidth = Math.round(width);
+  try {
+    globalThis.localStorage?.setItem(CHAT_WIDTH_KEY, String(chatPanelWidth));
+  } catch {
+    // Storage may be unavailable in the extension sandbox; the width then lasts for this session.
+  }
+  if (params.reopen === true) {
+    await optionalCall(() => eda.sys_IFrame.closeIFrame(CHAT_IFRAME_ID));
+    await openChat();
+  }
+  return { width: chatPanelWidth, reopened: params.reopen === true };
+}
+
+function readStoredChatWidth(): number {
+  try {
+    return Number(globalThis.localStorage?.getItem(CHAT_WIDTH_KEY)) || DEFAULT_CHAT_WIDTH;
+  } catch {
+    return DEFAULT_CHAT_WIDTH;
+  }
+}
+
+function clampChatWidth(width: number, viewportWidth: number): number {
+  return Math.round(Math.max(MIN_CHAT_WIDTH, Math.min(width, viewportWidth - 80)));
 }
 
 async function ensureBridgeConnected(options: { reason: string; manual: boolean; resetAttempts?: boolean }): Promise<void> {
@@ -203,7 +292,8 @@ async function startBridge(options: { reason: string; manual: boolean }): Promis
         startHeartbeat();
         if (!connectionState.connectedOnce || options.manual) {
           connectionState.connectedOnce = true;
-          showMessage("EasyEDA MCP Bridge", `Connected to ${wsUri}.`);
+          // A toast, not a dialog: dialogs are modal and block the editor.
+          showToast(`EasyEDA MCP Bridge connected to ${wsUri}.`, "success");
         }
       }
     );
@@ -353,12 +443,14 @@ function handleConnectionFailure(
     }, delayMs);
   }
 
-  if (options.manual || !hasRetryLeft || connectionState.phase === "blocked") {
+  if (options.manual || connectionState.phase === "blocked") {
     showMessage("EasyEDA MCP Bridge", [
       error.message,
       "",
       ...diagnosticHints(error)
     ].join("\n"));
+  } else if (!hasRetryLeft) {
+    showToast(`EasyEDA MCP Bridge: ${error.message}`, "warn");
   }
 }
 
@@ -1333,6 +1425,22 @@ function log(level: "warn" | "error", message: string, details?: unknown): void 
     return;
   }
   console[level](`[easyeda-mcp] ${message}`, details);
+}
+
+function showToast(message: string, type: "success" | "warn" | "info" = "info"): void {
+  try {
+    if (eda.sys_Message?.showToastMessage) {
+      eda.sys_Message.showToastMessage(message, type, 4);
+      return;
+    }
+    if (eda.sys_ToastMessage?.showMessage) {
+      eda.sys_ToastMessage.showMessage(message, type, 4);
+      return;
+    }
+  } catch (error) {
+    log("warn", "Toast message failed", error);
+  }
+  log("warn", message);
 }
 
 function showMessage(title: string, message: string): void {

@@ -24,6 +24,7 @@ export default defineConfig({
           { text: "Quick Start", link: "/quick-start" },
           { text: "AI Client Setup", link: "/ai-client-setup" },
           { text: "EasyEDA Pro Extension", link: "/easyeda-extension" },
+          { text: "Chat Inside EasyEDA", link: "/claude-chat" },
           { text: "Upgrading & Compatibility", link: "/upgrading" }
         ]
       },

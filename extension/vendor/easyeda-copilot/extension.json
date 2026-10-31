@@ -1,0 +1,118 @@
+{
+	"name": "easyeda-copilot",
+	"uuid": "64651de62a944308a56e3b42eb2cb248",
+	"displayName": "EasyEda Copilot",
+	"description": "AI-powered electronics design in EasyEDA Pro: schematic creation and editing, component search, PCB placement and routing, SPICE simulation, and design rule checks.",
+	"version": "1.3.2",
+	"publisher": "biosshot",
+	"engines": {
+		"eda": "^3.2.149"
+	},
+	"license": "MIT License",
+	"repository": {
+		"type": "github",
+		"url": "https://github.com/biosshot/easyeda-copilot"
+	},
+	"categories": "Other",
+	"keywords": [
+		"AI",
+		"Schematic",
+		"PCB",
+		"MCP"
+	],
+	"images": {
+		"logo": "./images/logo.png",
+		"banner": "./images/banner.png"
+	},
+	"homepage": "https://github.com/biosshot/easyeda-copilot",
+	"bugs": "https://github.com/biosshot/easyeda-copilot/issues",
+	"entry": "./dist/index",
+	"activationEvents": {},
+	"dependentExtensions": {},
+	"headerMenus": {
+		"sch": [
+			{
+				"id": "Copilot",
+				"title": "Copilot",
+				"menuItems": [
+					{
+						"id": "Interface",
+						"title": "Interface (Legacy)",
+						"registerFn": "openInterface"
+					},
+					{
+						"id": "Reused",
+						"title": "Reused blocks",
+						"registerFn": "openReused"
+					},
+					{
+						"id": "MCP",
+						"title": "MCP",
+						"registerFn": "openMcp"
+					},
+					{
+						"id": "Export",
+						"title": "Export",
+						"menuItems": [
+							{
+								"id": "ExportAsmCircuit",
+								"title": "Export assembly circuit",
+								"registerFn": "exportAsmCircuit"
+							}
+						]
+					},
+					{
+						"id": "Import",
+						"title": "Import",
+						"menuItems": [
+							{
+								"id": "importAsmCircuit",
+								"title": "Import assembly circuit",
+								"registerFn": "importAsmCircuit"
+							},
+							{
+								"id": "importAsmBoard",
+								"title": "Import assembly board",
+								"registerFn": "importAsmBoard"
+							}
+						]
+					},
+					{
+						"id": "About",
+						"title": "About...",
+						"registerFn": "about"
+					}
+				]
+			}
+		],
+		"pcb": [
+			{
+				"id": "Copilot",
+				"title": "Copilot",
+				"menuItems": [
+					{
+						"id": "MCP",
+						"title": "MCP",
+						"registerFn": "openMcp"
+					},
+					{
+						"id": "Import",
+						"title": "Import",
+						"menuItems": [
+							{
+								"id": "importAsmBoard",
+								"title": "Import assembly board",
+								"registerFn": "importAsmBoard"
+							}
+						]
+					},
+					{
+						"id": "About",
+						"title": "About...",
+						"registerFn": "about"
+					}
+				]
+			}
+		]
+	}
+}

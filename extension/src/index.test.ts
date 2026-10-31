@@ -532,4 +532,56 @@ describe("EasyEDA extension bridge handlers", () => {
       isJlcBasic: true
     });
   });
+
+  it("opens the chat panel as a non-modal window on the right edge without a blocking connect dialog", async () => {
+    const openIFrame = vi.fn(async () => true);
+    const showToastMessage = vi.fn();
+    vi.stubGlobal("eda", {
+      ...(globalThis as unknown as { eda: Record<string, unknown> }).eda,
+      sys_IFrame: { openIFrame, isIFrameAlreadyExist: vi.fn(async () => false), closeIFrame: vi.fn(async () => true) },
+      sys_Window: { getViewportSize: () => ({ width: 1600, height: 900 }) },
+      sys_Message: { showToastMessage }
+    });
+    const extension = await import("./index.js");
+
+    await extension.openChat();
+    await registration.onOpen?.();
+
+    expect(openIFrame).toHaveBeenCalledWith("/iframe/chat.html", 420, 760, "easyeda-mcp-chat", expect.objectContaining({
+      grayscaleMask: false,
+      x: 1600 - 420 - 24
+    }));
+    expect(showToastMessage).toHaveBeenCalledWith(expect.stringContaining("connected"), "success", 4);
+    expect(dialogMessages).toHaveLength(0);
+  });
+
+  it("starts the built-in Copilot tools client on load and toggles it from the menu", async () => {
+    const stub = await import("./test/copilotVendorStub.js");
+    stub.calls.length = 0;
+    const extension = await import("./index.js");
+    await vi.waitFor(() => expect(stub.calls).toContain("start"));
+
+    extension.toggleCopilotTools();
+    await vi.waitFor(() => expect(stub.calls).toContain("toggle"));
+  });
+
+  it("reopens the chat panel at the width the panel asks for", async () => {
+    const openIFrame = vi.fn(async () => true);
+    const closeIFrame = vi.fn(async () => true);
+    vi.stubGlobal("eda", {
+      ...(globalThis as unknown as { eda: Record<string, unknown> }).eda,
+      sys_IFrame: { openIFrame, closeIFrame, isIFrameAlreadyExist: vi.fn(async () => false) },
+      sys_Window: { getViewportSize: () => ({ width: 1600, height: 900 }) },
+      sys_Message: { showToastMessage: vi.fn() }
+    });
+    const extension = await import("./index.js");
+    extension.connect(); await registration.onOpen?.();
+
+    await registration.onMessage?.({ data: JSON.stringify({ kind: "call", requestId: "w1", method: "setChatPanelWidth",
+      params: { width: 610, reopen: true } }) } as MessageEvent<string>);
+
+    expect(JSON.parse(sentMessages.at(-1)!.message)).toMatchObject({ kind: "result", result: { width: 610, reopened: true } });
+    expect(closeIFrame).toHaveBeenCalledWith("easyeda-mcp-chat");
+    expect(openIFrame).toHaveBeenLastCalledWith("/iframe/chat.html", 610, 760, "easyeda-mcp-chat", expect.objectContaining({ x: 1600 - 610 - 24 }));
+  });
 });

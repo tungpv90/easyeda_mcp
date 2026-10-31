@@ -1,0 +1,789 @@
+import type { CircuitAssembly, ExplainCircuit } from '@copilot/shared/types/circuit';
+import { readComponentProperties, readPartUuidFromPrimitive, resolvedPartUuid } from './component-part-ref';
+import { readProjectDeviceRefs } from './project-device-refs';
+import { getPartUuid } from '@copilot/shared/types/lcsc';
+import { searchComponentInSCH } from './search';
+import { getBBox, getPrimitiveById, normalizeWireLine, to2, withTimeout } from './utils';
+import { readPortStyles, type PinContact } from './port-styles';
+
+let lastToastTime = 0;
+const TOAST_THROTTLE_MS = 8000;
+const SEARCH_BY_CODES_CHUNK_SIZE = 50;
+function getFootprintNameFromOtherProperty(otherProperty?: Record<string, unknown> | null) {
+    const footprint = Object.entries(otherProperty ?? {}).find(([key, value]) => {
+        return key.toLowerCase().includes('footprint') && value !== null && value !== undefined && value.toString().trim();
+    });
+
+    return footprint?.[1]?.toString() ?? null;
+}
+
+type SearchByCodesDevice = {
+    uuid: string;
+    product_code: string;
+    attributes?: Record<string, unknown>;
+    footprint?: {
+        display_title?: string;
+        title?: string;
+    };
+};
+
+type SearchByCodesResponse = {
+    success?: boolean;
+    result?: SearchByCodesDevice[];
+};
+
+async function searchDevicesByCodes(codes: string[]) {
+    const devices: SearchByCodesDevice[] = [];
+
+    for (let index = 0; index < codes.length; index += SEARCH_BY_CODES_CHUNK_SIZE) {
+        const chunk = codes.slice(index, index + SEARCH_BY_CODES_CHUNK_SIZE);
+        const response = await eda.sys_ClientUrl.request('https://pro.easyeda.com/api/devices/searchByCodes', 'POST', JSON.stringify({ codes: chunk }), {
+            headers: {
+                'Content-Type': 'application/json'
+            },
+        });
+
+        if (!response.ok) continue;
+
+        const data = await response.json() as SearchByCodesResponse;
+        if (data.success && Array.isArray(data.result)) {
+            devices.push(...data.result);
+        }
+    }
+
+    return devices;
+}
+
+// Вспомогательная функция: парсинг Allegro-нетлиста
+function parseAllegroNetlist(netlistText: string, allowedSignalNames?: Set<string>) {
+    netlistText = netlistText.replaceAll('\r', '').replaceAll('\n\n', '\n');
+
+    const lines = netlistText.split('\n');
+    const signalToPins = new Map<string, string[]>(); // 'VCC' => ['R1.1', 'C2.2', ...]
+    let inNetsSection = false;
+    let currentNetLine = '';
+
+    const normalizeLine = (line: string) => line
+        .replaceAll(',', ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const parseNetLine = (line: string) => {
+        // Example net line: 'VCC_12V' ; H7.1 R7.1 R9.1
+        const match = line.match(/^['"]?(.*?)['"]?\s*;\s*(.*)$/);
+        if (!match) return;
+
+        const signalName = match[1].trim();
+        if (allowedSignalNames?.size && !allowedSignalNames.has(signalName) && !signalName.startsWith('$')) return;
+
+        const pinRefs = match[2]
+            .split(/\s+/)
+            .map(p => p.trim())
+            .filter(Boolean);
+
+        signalToPins.set(signalName, pinRefs);
+    };
+
+    for (const line of lines) {
+        const trimmed = normalizeLine(line);
+        if (trimmed === '$NETS') {
+            if (currentNetLine) {
+                parseNetLine(currentNetLine);
+                currentNetLine = '';
+            }
+            inNetsSection = true;
+            continue;
+        }
+        if (trimmed.startsWith('$') && trimmed !== '$NETS' && !trimmed.includes(';')) {
+            if (currentNetLine) {
+                parseNetLine(currentNetLine);
+                currentNetLine = '';
+            }
+            inNetsSection = false;
+            continue;
+        }
+        if (!inNetsSection || !trimmed || trimmed.startsWith(';')) continue;
+
+        // Пример строки: 'VCC_12V' ; H7.1 R7.1 R9.1
+        if (trimmed.includes(';')) {
+            if (currentNetLine) parseNetLine(currentNetLine);
+            currentNetLine = trimmed;
+            continue;
+        }
+
+        if (currentNetLine) {
+            currentNetLine += ` ${trimmed}`;
+        }
+    }
+
+    if (currentNetLine) {
+        parseNetLine(currentNetLine);
+    }
+
+    // Обратный маппинг: "R1.1" => "VCC"
+    const pinToSignal = new Map<string, string>();
+    for (const [signal, pinList] of signalToPins) {
+        for (const pinRef of pinList) {
+            pinToSignal.set(pinRef, signal);
+        }
+    }
+
+    return pinToSignal;
+}
+
+export function signalsOnOtherPages(netlistText: string, currentPagePinRefs: ReadonlySet<string>) {
+    const signals = new Set<string>();
+    for (const [pinRef, signal] of parseAllegroNetlist(netlistText)) {
+        if (!currentPagePinRefs.has(pinRef) && signal && !signal.startsWith('$') && !/^nc$/i.test(signal)) {
+            signals.add(signal);
+        }
+    }
+    return [...signals];
+}
+
+export async function getOtherPageSignals() {
+    let netlistText = await eda.sch_ManufactureData.getNetlistFile(undefined, ESYS_NetlistType.ALLEGRO)
+        .then(file => file?.text()).catch(() => undefined);
+    if (!netlistText && typeof eda?.sch_Netlist?.getNetlist === 'function') {
+        netlistText = await eda.sch_Netlist.getNetlist(ESYS_NetlistType.ALLEGRO).catch(() => undefined);
+    }
+    if (!netlistText) throw new Error('Failed export netlist');
+
+    const currentPagePinRefs = new Set<string>();
+    for (const component of await eda.sch_PrimitiveComponent.getAll()) {
+        if (component.getState_PrimitiveType() !== ESCH_PrimitiveType.COMPONENT) continue;
+        const designator = component.getState_Designator();
+        if (!designator || (designator.includes('|') && designator.length > 4)) continue;
+        const pins = await eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(component.getState_PrimitiveId());
+        if (!pins) throw new Error(`Failed to read pins of ${designator}`);
+        for (const pin of pins) currentPagePinRefs.add(`${designator}.${pin.getState_PinNumber()}`);
+    }
+    return signalsOnOtherPages(netlistText, currentPagePinRefs);
+}
+
+export async function getSchematic(primitiveIds?: string[], options?: { disableExtractPartUuid?: boolean, extractFootprintUuid?: boolean, disableExtractPos?: boolean, includePortStyles?: boolean }) {
+    const docType = await eda.dmt_SelectControl.getCurrentDocumentInfo().then(d => d?.documentType).catch(_ => undefined);
+
+    if (docType !== EDMT_EditorDocumentType.SCHEMATIC_PAGE) {
+        throw new Error('Failed getSchematic. Open schematic page doc to fix.')
+    }
+
+    const now = Date.now();
+    // @ts-ignore
+    if (now - lastToastTime > TOAST_THROTTLE_MS) {
+        eda.sys_Message.showToastMessage(`Please make sure there are no duplicate designators or go to Design -> Annotate Designator`, ESYS_ToastMessageType.INFO);
+        lastToastTime = now;
+    }
+
+    // 1. Получаем нетлист как строку
+    let netlistText = await eda.sch_ManufactureData.getNetlistFile(undefined, ESYS_NetlistType.ALLEGRO).then(file => file?.text()).catch(e => undefined);
+    if (!netlistText && typeof eda?.sch_Netlist?.getNetlist === 'function') netlistText = await eda.sch_Netlist.getNetlist(ESYS_NetlistType.ALLEGRO).catch(e => undefined);
+
+    if (!netlistText) {
+        eda.sys_Log.add("Failed export netlis", ESYS_LogType.FATAL_ERROR);
+        throw new Error('Failed export netlist')
+    }
+
+    const allWiresName = await eda.sch_PrimitiveWire.getAll()
+        .then(wires => wires
+            .map(wire => wire.getState_Net())
+            .filter((netName): netName is string => typeof netName === 'string' && netName.trim().length > 0)
+        )
+        .catch(() => []);
+    const allShortSymbolNames = await eda.sch_PrimitiveComponent.getAll()
+        .then(components => components
+            .filter(component => component.getState_ComponentType() === ESCH_PrimitiveComponentType.NET_FLAG
+                || component.getState_ComponentType() === ESCH_PrimitiveComponentType.NET_PORT)
+            .map(component => component.getState_Net() || component.getState_OtherProperty()?.['Global Net Name'])
+            .filter((netName): netName is string => typeof netName === 'string' && netName.trim().length > 0)
+        )
+        .catch(() => []);
+    const currentPageSignalNames = new Set([...allWiresName, ...allShortSymbolNames]);
+
+    const pinToSignal = parseAllegroNetlist(netlistText, currentPageSignalNames);
+    eda.sys_Log.add('netlist ' + JSON.stringify(Object.fromEntries(pinToSignal.entries())));
+
+    if (!primitiveIds) {
+        primitiveIds = await eda.sch_SelectControl.getAllSelectedPrimitives_PrimitiveId();
+    }
+
+    const componentsMap: Map<string, ExplainCircuit['components'][0] & { code?: string }> = new Map();
+    const pinContacts: PinContact[] = [];
+
+    for (const id of primitiveIds) {
+        const primitiveComponent: ISCH_PrimitiveComponent | ISCH_PrimitiveComponent$1 | undefined = await getPrimitiveById(id).then(r => Array.isArray(r) ? r[0] : r).catch(err => null);
+
+        if (!primitiveComponent || primitiveComponent.getState_PrimitiveType() !== ESCH_PrimitiveType.COMPONENT) {
+            // eda.sys_Log.add(`[getSchematic] Error Processing component ${JSON.stringify(primitiveComponent)}`);
+            continue;
+        }
+
+        const designator = primitiveComponent?.getState_Designator?.() ?? '';
+
+        if (!designator.trim()) {
+            // eda.sys_Log.add(`[getSchematic] Error Processing component`);
+            continue;
+        }
+
+        if (designator.includes('|') && designator.length > 4) {
+            continue;
+        }
+
+        const component = componentsMap.get(designator);
+
+        if (component && !primitiveComponent.getState_SubPartName()) {
+            eda.sys_Message.showToastMessage(`Duplicate designator: ${designator}\nPlease rename the designations. (Design -> Annotate Designator)`, ESYS_ToastMessageType.ERROR);
+            console.warn(`[getSchematic] Duplicate designator: ${designator}; ${primitiveComponent.getState_SubPartName()}`);
+            continue;
+        }
+
+        let value: string | null = null;
+
+        const name = primitiveComponent.getState_Name() ?? '';
+
+        const otherProperty = readComponentProperties(primitiveComponent);
+
+        if (name.includes("Manufacturer Part")) {
+            value = primitiveComponent.getState_ManufacturerId() ?? '';
+        }
+        else if (name.includes("Value")) {
+            value = otherProperty?.Value?.toString() ?? null;
+        }
+        else if (name[0] !== '=') {
+            value = name;
+        }
+
+        if (!value) {
+            value = primitiveComponent.getState_ManufacturerId() ?? '';
+        }
+
+        const pins: ExplainCircuit['components'][0]['pins'] = [];
+
+        // eda.sys_Log.add(`[getSchematic] Processing component: ${designator}, Value: ${value}`);
+        const rawPins = await eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(primitiveComponent.getState_PrimitiveId()).catch(e => undefined)
+
+        if (Array.isArray(rawPins)) {
+            for (const p of rawPins) {
+                const rawNum = p.getState_PinNumber();
+                const pinNumber = rawNum;
+                const pinName = p.getState_PinName();
+
+                // Сопоставление: "R7.1" → сигнал
+                const pinRef = `${designator}.${pinNumber}`;
+                const signalName = pinToSignal.get(pinRef) || '';
+                // eda.sys_Log.add(`[getSchematic]   Pin: ${pinRef}, Name: ${pinName}, Signal: ${signalName}`);
+
+                pins.push({
+                    pin_number: pinNumber,
+                    name: pinName,
+                    signal_name: signalName,
+                });
+                if (options?.includePortStyles && signalName) {
+                    try {
+                        pinContacts.push({
+                            designator, pin_number: pinNumber, signal_name: signalName,
+                            x: p.getState_X(), y: p.getState_Y(),
+                        });
+                    } catch { /* Optional style lookup must not affect schematic extraction. */ }
+                }
+            }
+        }
+
+        const component_ = {
+            designator,
+            part_uuid: readPartUuidFromPrimitive(primitiveComponent),
+            pins: [...(component?.pins ?? []), ...pins],
+            value,
+            pos: {
+                x: primitiveComponent.getState_X(),
+                y: primitiveComponent.getState_Y(),
+                rotate: primitiveComponent.getState_Rotation(),
+                mirror: primitiveComponent.getState_Mirror()
+            },
+            code: primitiveComponent.getState_SupplierId()?.toString() || undefined,
+            footprint_name: component?.footprint_name ?? getFootprintNameFromOtherProperty(otherProperty),
+            footprint_uuid: null as string | null | undefined
+        }
+
+        if (options?.extractFootprintUuid) {
+            component_.footprint_uuid = primitiveComponent.getState_Footprint()?.uuid;
+        }
+
+        componentsMap.set(designator, component_);
+    }
+
+    // const componentsPromises = componentsMap.values().map((component): Promise<ExplainCircuit['components'][0]> => new Promise(async (resolve) => {
+    //     let device: ILIB_DeviceSearchItem | null = null;
+
+    //     if (!options?.disableExtractPartUuid) {
+    //         const query = component.code || component.value;
+
+    //         if (!query) {
+    //             eda.sys_Message.showToastMessage(`Fail get component ${component.designator}`, ESYS_ToastMessageType.ERROR);
+    //             device = null;
+    //         }
+    //         else {
+    //             device = await eda.lib_Device.search(query, undefined, undefined, undefined, 100).then(devices => {
+    //                 return devices.find(d => d.supplierId === query || d.manufacturerId === query || d.name === query) ?? null
+    //             }).catch(() => null);
+    //         }
+    //     }
+
+    //     resolve({
+    //         designator: component.designator,
+    //         pins: component.pins,
+    //         value: component.value,
+    //         pos: component.pos,
+    //         part_uuid: device?.uuid ?? null,
+    //         footprint_name: device?.footprint?.name
+    //     });
+    // }));
+
+    // const components = await Promise.all(componentsPromises)
+
+    const lcscIds = [...new Set([...componentsMap.values()]
+        .map(component => component.code)
+        .filter((code): code is string => Boolean(code)))];
+
+    const devices = !options?.disableExtractPartUuid && lcscIds.length
+        ? await searchDevicesByCodes(lcscIds).catch(() => [])
+        : [];
+
+    const deviceByLcscId = new Map<string, SearchByCodesDevice>();
+    for (const device of devices) {
+        if (device.product_code && !deviceByLcscId.has(device.product_code)) {
+            deviceByLcscId.set(device.product_code, device);
+        }
+    }
+
+    // Keep the legacy LCSC path first for unmarked components. Export is only
+    // needed for local IDs that neither stored metadata nor supplier lookup resolves.
+    for (const component of componentsMap.values()) {
+        if (!resolvedPartUuid(component.part_uuid) && component.code) {
+            const original = resolvedPartUuid(deviceByLcscId.get(component.code)?.uuid);
+            if (original) component.part_uuid = original;
+        }
+    }
+    const needsProjectRefs = !options?.disableExtractPartUuid && [...componentsMap.values()]
+        .some(component => component.part_uuid && !resolvedPartUuid(component.part_uuid));
+    const projectRefs = needsProjectRefs ? await readProjectDeviceRefs() : new Map();
+    for (const component of componentsMap.values()) {
+        const original = component.part_uuid && projectRefs.get(getPartUuid(component.part_uuid));
+        if (original) component.part_uuid = original;
+    }
+
+    const components: ExplainCircuit['components'] = [...componentsMap.values()].map(component => {
+        const device = component.code ? deviceByLcscId.get(component.code) : null;
+
+        const comp: ExplainCircuit['components'][0] = {
+            designator: component.designator,
+            pins: component.pins,
+            value: component.value,
+            part_uuid: options?.disableExtractPartUuid ? null : resolvedPartUuid(component.part_uuid),
+        };
+
+        if (component.footprint_uuid) {
+            comp.footprint_uuid = component.footprint_uuid;
+        }
+
+        if (component.footprint_name) {
+            comp.footprint_name = device?.footprint?.display_title
+                ?? device?.footprint?.title
+                ?? device?.attributes?.['Supplier Footprint']?.toString()
+                ?? component.footprint_name;
+        }
+
+        if (!options?.disableExtractPos && component.pos) {
+            comp.pos = component.pos;
+        }
+
+        return comp;
+    });
+
+    if (options?.includePortStyles && pinContacts.length) {
+        const styles = await readPortStyles(pinContacts);
+        for (const component of components) for (const pin of component.pins) {
+            const style = styles.get(`${component.designator}.${pin.pin_number}`);
+            if (style) pin.port_style = style;
+        }
+    }
+
+    const explainCircuit: ExplainCircuit = { components };
+
+    return explainCircuit;
+}
+
+export async function getAsmCircuit(primitiveIds?: string[]): Promise<CircuitAssembly> {
+    if (!primitiveIds) primitiveIds = await eda.sch_PrimitiveComponent.getAllPrimitiveId().then(r => [...r]);
+    if (!primitiveIds) throw new Error("Failed get primitives for export asm circuit")
+
+    const circuit = await getSchematic(primitiveIds, { disableExtractPartUuid: false });
+    const allPrimitive = await getPrimitiveById(primitiveIds).catch(e => []);
+    const bbox = await getBBox(allPrimitive);
+
+    if (!bbox) {
+        eda.sys_Message.showToastMessage(`Error with get circuit BBOX`, ESYS_ToastMessageType.ERROR);
+        throw new Error("Failed get bbox for export asm circuit")
+    }
+
+    const ssMap = new Map<string, {
+        component: ISCH_PrimitiveComponent | ISCH_PrimitiveComponent$1,
+        primitiveId: string
+    }>();
+
+    for (let index = 0; index < allPrimitive.length; index++) {
+        const shortSymbol = allPrimitive[index];
+
+        if (shortSymbol.getState_ComponentType() !== ESCH_PrimitiveComponentType.NET_FLAG &&
+            shortSymbol.getState_ComponentType() !== ESCH_PrimitiveComponentType.NET_PORT) {
+            continue;
+        }
+
+        const net = shortSymbol.getState_Net() || shortSymbol.getState_OtherProperty()?.['Global Net Name'];
+
+        if (typeof net !== 'string') continue;
+
+        const designator = `${net}|${crypto.randomUUID().slice(0, 4)}`;
+
+        ssMap.set(designator, {
+            component: shortSymbol,
+            primitiveId: primitiveIds[index]
+        });
+
+        circuit.components.push({
+            designator,
+            part_uuid: readPartUuidFromPrimitive(shortSymbol),
+            pins: [{
+                name: '',
+                pin_number: 1,
+                signal_name: net
+            }],
+            pos: {
+                x: shortSymbol.getState_X(),
+                y: shortSymbol.getState_Y(),
+                rotate: shortSymbol.getState_Rotation(),
+                mirror: shortSymbol.getState_Mirror()
+            },
+            value: 'unknown_shortsym'
+        })
+    }
+
+    const searchComponent = async (designator: string) => {
+        if (ssMap.has(designator)) {
+            return [ssMap.get(designator)!];
+        }
+        return await searchComponentInSCH(designator).catch(() => []);
+    }
+
+    // Формирование edges из проводов на схеме: извлекаем реальные провода с их маршрутами
+    const allWires = await eda.sch_PrimitiveWire.getAll().catch(e => []);
+
+    // Строим мапу координат пинов: "x,y" → { designator, pin_number }
+    const pinCoordMap = new Map<string, { designator: string; pin_number: string | number }>();
+    for (const component of circuit.components) {
+        const primitives = await searchComponent(component.designator);
+        for (const prim of primitives ?? []) {
+            const compPins = await eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(prim.primitiveId).catch(() => []);
+            for (const p of compPins ?? []) {
+                const px = p.getState_X();
+                const py = p.getState_Y();
+                pinCoordMap.set(`${to2(px)},${to2(py)}`, {
+                    designator: component.designator,
+                    pin_number: p.getState_PinNumber(),
+                });
+            }
+        }
+    }
+
+    // Группируем пины по signal_name (для sources/targets)
+    const signalToPins = new Map<string, Array<{ designator: string; pin_number: string | number }>>();
+    for (const component of circuit.components) {
+        for (const pin of component.pins) {
+            const signalName = pin.signal_name?.trim();
+            if (!signalName || signalName.toLowerCase() === 'nc') continue;
+            if (!signalToPins.has(signalName)) {
+                signalToPins.set(signalName, []);
+            }
+            signalToPins.get(signalName)!.push({
+                designator: component.designator,
+                pin_number: pin.pin_number,
+            });
+        }
+    }
+
+    // Строим граф проводов ПО ЦЕПЯМ: для каждого net — свой граф смежности
+    const ptKey = (p: { x: number; y: number }) => `${to2(p.x)},${to2(p.y)}`;
+    const netToWireGraph = new Map<string, Map<string, Set<string>>>();
+
+    for (const wire of allWires) {
+        const lineRaw = wire.getState_Line();
+        if (!lineRaw || !Array.isArray(lineRaw)) continue;
+
+        const wireData = normalizeWireLine(lineRaw);
+
+        // Собираем все точки этого провода
+        const wirePoints = new Set<string>();
+        for (const seg of wireData) {
+            if (seg.length < 4) continue;
+            wirePoints.add(ptKey({ x: seg[0], y: seg[1] }));
+            wirePoints.add(ptKey({ x: seg[2], y: seg[3] }));
+        }
+
+        // Определяем net этого провода по пинам на его точках
+        let wireNet = '';
+        for (const pt of wirePoints) {
+            const pinInfo = pinCoordMap.get(pt);
+            if (pinInfo) {
+                const comp = circuit.components.find(c => c.designator === pinInfo.designator);
+                const pin = comp?.pins.find(p => p.pin_number == pinInfo.pin_number);
+                if (pin?.signal_name) {
+                    wireNet = pin.signal_name;
+                    break;
+                }
+            }
+        }
+
+        if (!wireNet) continue;
+
+        // Добавляем сегменты в граф этой цепи
+        if (!netToWireGraph.has(wireNet)) {
+            netToWireGraph.set(wireNet, new Map());
+        }
+        const graph = netToWireGraph.get(wireNet)!;
+
+        for (const seg of wireData) {
+            if (seg.length < 4) continue;
+            const startKey = ptKey({ x: seg[0], y: seg[1] });
+            const endKey = ptKey({ x: seg[2], y: seg[3] });
+
+            if (!graph.has(startKey)) graph.set(startKey, new Set());
+            if (!graph.has(endKey)) graph.set(endKey, new Set());
+            graph.get(startKey)!.add(endKey);
+            graph.get(endKey)!.add(startKey);
+        }
+    }
+
+    // Мапа: pinId → координата пина "x,y"
+    const pinIdToCoord = new Map<string, string>();
+    for (const [coord, info] of pinCoordMap) {
+        const pinId = `${info.designator}_pin_${info.pin_number}`;
+        pinIdToCoord.set(pinId, coord);
+    }
+
+    // BFS поиск пути по графу проводов конкретной цепи
+    function findWirePath(graph: Map<string, Set<string>>, startCoord: string, endCoord: string): string[] | null {
+        if (startCoord === endCoord) return [startCoord];
+        if (!graph.has(startCoord) || !graph.has(endCoord)) return null;
+
+        const visited = new Set<string>();
+        const queue: Array<{ coord: string; path: string[] }> = [{ coord: startCoord, path: [startCoord] }];
+        visited.add(startCoord);
+
+        while (queue.length > 0) {
+            const { coord, path } = queue.shift()!;
+
+            for (const neighbor of graph.get(coord) ?? []) {
+                if (neighbor === endCoord) {
+                    return [...path, neighbor];
+                }
+                if (!visited.has(neighbor)) {
+                    visited.add(neighbor);
+                    queue.push({ coord: neighbor, path: [...path, neighbor] });
+                }
+            }
+        }
+
+        return null;
+    }
+
+    // Поиск связных компонентов в графе
+    function findConnectedComponents(graph: Map<string, Set<string>>): Array<Set<string>> {
+        const visited = new Set<string>();
+        const components: Array<Set<string>> = [];
+
+        for (const [node] of graph) {
+            if (visited.has(node)) continue;
+
+            const component = new Set<string>();
+            const queue = [node];
+            visited.add(node);
+
+            while (queue.length > 0) {
+                const current = queue.shift()!;
+                component.add(current);
+
+                for (const neighbor of graph.get(current) ?? []) {
+                    if (!visited.has(neighbor)) {
+                        visited.add(neighbor);
+                        queue.push(neighbor);
+                    }
+                }
+            }
+
+            components.push(component);
+        }
+
+        return components;
+    }
+
+    const edges: CircuitAssembly['edges'] = [];
+    let edgeCounter = 0;
+
+    for (const [signalName, pins] of signalToPins) {
+        if (pins.length < 2) continue;
+
+        const pinIds = pins.map(p => `${p.designator}_pin_${p.pin_number}`);
+
+        // Граф проводов только для этой цепи
+        const netGraph = netToWireGraph.get(signalName);
+
+        if (!netGraph || netGraph.size === 0) {
+            // Нет проводов — не создаём edges (пины не соединены физически)
+            continue;
+        }
+
+        // Находим связные компоненты в графе проводов этой цепи
+        const components = findConnectedComponents(netGraph);
+
+        // Группируем пины по связному компоненту
+        const pinToComponent = new Map<string, number>(); // pinId → component index
+        for (const pinId of pinIds) {
+            const coord = pinIdToCoord.get(pinId);
+            if (!coord) continue;
+            for (let ci = 0; ci < components.length; ci++) {
+                if (components[ci].has(coord)) {
+                    pinToComponent.set(pinId, ci);
+                    break;
+                }
+            }
+        }
+
+        // Группируем pinIds по компоненту
+        const componentToPins = new Map<number, string[]>();
+        for (const pinId of pinIds) {
+            const ci = pinToComponent.get(pinId);
+            if (ci === undefined) continue; // Пин не в графе проводов — пропускаем
+            if (!componentToPins.has(ci)) componentToPins.set(ci, []);
+            componentToPins.get(ci)!.push(pinId);
+        }
+
+        // Создаём edges только внутри каждого связного компонента
+        for (const [, componentPins] of componentToPins) {
+            if (componentPins.length < 2) continue;
+
+            const referencePin = componentPins[0];
+            const referenceCoord = pinIdToCoord.get(referencePin);
+            const targetPins = componentPins.slice(1);
+
+            for (const targetPin of targetPins) {
+                const targetCoord = pinIdToCoord.get(targetPin);
+
+                if (referenceCoord && targetCoord) {
+                    const pathCoords = findWirePath(netGraph, referenceCoord, targetCoord);
+
+                    if (pathCoords && pathCoords.length >= 2) {
+                        const pathPoints = pathCoords.map(key => {
+                            const [x, y] = key.split(',').map(Number);
+                            return { x, y: bbox.height + y };
+                        });
+
+                        const bendPoints = pathPoints.slice(1, -1);
+
+                        edges.push({
+                            sources: [referencePin],
+                            targets: [targetPin],
+                            container: '__v_root__',
+                            sections: [{
+                                id: `${signalName}_${edgeCounter++}`,
+                                startPoint: pathPoints[0],
+                                endPoint: pathPoints[pathPoints.length - 1],
+                                bendPoints: bendPoints.length ? bendPoints : undefined,
+                                incomingShape: referencePin,
+                                outgoingShape: targetPin,
+                            }],
+                        });
+                        continue;
+                    }
+                }
+
+                // Путь не найден — edge с пустым маршрутом
+                edges.push({
+                    sources: [referencePin],
+                    targets: [targetPin],
+                    container: '__v_root__',
+                    sections: [{
+                        id: `${signalName}_${edgeCounter++}`,
+                        startPoint: { x: 0, y: 0 },
+                        bendPoints: [],
+                        endPoint: { x: 0, y: 0 },
+                        incomingShape: referencePin,
+                        outgoingShape: targetPin,
+                    }],
+                });
+            }
+        }
+    }
+
+    // throw netToWireSections;
+
+    const amsCircuit: CircuitAssembly = {
+        metadata: { description: '', project_name: '' },
+        components: circuit.components.map((component): CircuitAssembly['components'][0] => ({
+            block_name: '__v_root__',
+            designator: component.designator,
+            part_uuid: component.part_uuid,
+            pins: component.pins,
+            search_query: component.value,
+            value: component.value,
+            sub_part_name: undefined,
+            pos: {
+                center: {
+                    x: 0,
+                    y: 0
+                },
+                height: 0,
+                width: 0,
+                x: component.pos!.x,
+                y: bbox.height - component.pos!.y,
+                rotate: component.pos!.rotate,
+                mirror: component.pos!.mirror
+            }
+        })),
+        blocks_rect: [{
+            description: '',
+            height: bbox.height,
+            width: bbox.width,
+            name: '__v_root__',
+            x: 5,
+            y: 5
+        }],
+        blocks: [],
+        edges,
+    }
+
+    const offsetX = -bbox.minX;
+    const offsetY = -bbox.maxY;
+
+    const applyPoint = <T extends { x: number, y: number }>(p: T) => {
+        return {
+            ...p,
+            x: p.x + offsetX,
+            y: p.y + offsetY
+        }
+    }
+
+    for (const component of amsCircuit.components) {
+        component.pos = applyPoint(component.pos);
+    }
+
+    for (const edge of amsCircuit.edges) {
+        edge.sections = edge.sections?.map(section => ({
+            ...section,
+            endPoint: applyPoint(section.endPoint),
+            startPoint: applyPoint(section.startPoint),
+            bendPoints: section.bendPoints?.map(applyPoint)
+        }))
+    }
+
+    return amsCircuit;
+}
